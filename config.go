@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 type config struct {
@@ -14,7 +15,7 @@ type config struct {
 	WhiteList []string `json:"whiteList"`
 }
 
-func doLog(path string, header http.Header, config config) bool {
+func doLogBasedOnPath(path string, header http.Header, config config) bool {
 	inBlackList := patternExists(path, config.BlackList)
 
 	// first check if url path is in blacklist or not
@@ -33,6 +34,13 @@ func doLog(path string, header http.Header, config config) bool {
 	return true
 }
 
+func doLogBasedOnResponseHeader(header http.Header) bool {
+	content_type := header.Get("Content-Type")
+
+	return strings.Contains(content_type, "application/json")
+
+}
+
 func patternExists(path string, list []string) bool {
 	for _, pattern := range list {
 		match, err := regexp.MatchString(pattern, path)
@@ -49,6 +57,7 @@ func patternExists(path string, list []string) bool {
 }
 
 func GetConfigFromDashboard(apiUrl string) (*config, error) {
+	config := new(config)
 	path := apiUrl + "/middleware/config" + "?source=golang"
 	resp, err := http.Get(path)
 	if err != nil {
@@ -59,15 +68,13 @@ func GetConfigFromDashboard(apiUrl string) (*config, error) {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Println("Error while reading response body of config api response", err)
-		return nil, err
+		return config, err
 	}
 
-	config := new(config)
-
-	error := json.Unmarshal(data, &config)
-	if error != nil {
+	err = json.Unmarshal(data, &config)
+	if err != nil {
 		log.Println("Error while unmarshaling response body of config api response", err)
-		return nil, error
+		return config, err
 	}
 
 	return config, nil

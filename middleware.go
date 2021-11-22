@@ -31,7 +31,7 @@ const (
 func Middleware(kafkaWriter *kafka.Writer, config *config) func(h http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			dl := doLog(r.URL.Path, r.Header, *config)
+			dl := doLogBasedOnPath(r.URL.Path, r.Header, *config)
 
 			if dl {
 				body, err := io.ReadAll(r.Body)
@@ -48,6 +48,8 @@ func Middleware(kafkaWriter *kafka.Writer, config *config) func(h http.Handler) 
 				cw := NewResponseWriter(w)
 
 				next.ServeHTTP(cw, r)
+
+				doLogBasedOnResponseHeader(cw.Header())
 				process(r, cw, kafkaWriter, body)
 			} else {
 				next.ServeHTTP(w, r)
