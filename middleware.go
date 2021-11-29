@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	const_akto_account_id  = "akto_account_id"
 	const_path             = "path"
 	const_request_headers  = "requestHeaders"
 	const_response_headers = "responseHeaders"
@@ -28,7 +29,7 @@ const (
 	const_content_type     = "contentType"
 )
 
-func Middleware(kafkaWriter *kafka.Writer, config *config) func(h http.Handler) http.Handler {
+func Middleware(kafkaWriter *kafka.Writer, config *config, akto_account_id int) func(h http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			dl := doLogBasedOnPath(r.URL.Path, r.Header, *config)
@@ -49,8 +50,10 @@ func Middleware(kafkaWriter *kafka.Writer, config *config) func(h http.Handler) 
 
 				next.ServeHTTP(cw, r)
 
-				doLogBasedOnResponseHeader(cw.Header())
-				process(r, cw, kafkaWriter, body)
+				dl_2 := doLogBasedOnResponseHeader(cw.Header())
+				if dl_2 {
+					process(akto_account_id, r, cw, kafkaWriter, body)
+				}
 			} else {
 				next.ServeHTTP(w, r)
 			}
@@ -59,9 +62,10 @@ func Middleware(kafkaWriter *kafka.Writer, config *config) func(h http.Handler) 
 	}
 }
 
-func process(r *http.Request, cw ResponseWriter, kafkaWriter *kafka.Writer, body []byte) {
+func process(akto_account_id int, r *http.Request, cw ResponseWriter, kafkaWriter *kafka.Writer, body []byte) {
 	var data = make(map[string]string)
 
+	data[const_akto_account_id] = strconv.Itoa(akto_account_id)
 	data[const_path] = r.URL.Path
 	j, err := json.Marshal(r.Header)
 	if err != nil {
