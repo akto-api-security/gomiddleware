@@ -29,33 +29,28 @@ const (
 	const_content_type     = "contentType"
 )
 
-func Middleware(kafkaWriter *kafka.Writer, config *config, akto_account_id int) func(h http.Handler) http.Handler {
+func Middleware(kafkaWriter *kafka.Writer, akto_account_id int) func(h http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			dl := doLogBasedOnPath(r.URL.Path, r.Header, *config)
 
+			body, err := io.ReadAll(r.Body)
+			defer r.Body.Close()
+
+			if err != nil {
+				log.Printf("Error reading body: %v", err)
+				http.Error(w, "can't read body", http.StatusBadRequest)
+				return
+			}
+
+			// And now set a new body, which will simulate the same data we read:
+			r.Body = io.NopCloser(bytes.NewBuffer(body))
+			cw := NewResponseWriter(w)
+
+			next.ServeHTTP(cw, r)
+
+			dl := doLogBasedOnResponseHeader(cw.Header())
 			if dl {
-				body, err := io.ReadAll(r.Body)
-				defer r.Body.Close()
-
-				if err != nil {
-					log.Printf("Error reading body: %v", err)
-					http.Error(w, "can't read body", http.StatusBadRequest)
-					return
-				}
-
-				// And now set a new body, which will simulate the same data we read:
-				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				cw := NewResponseWriter(w)
-
-				next.ServeHTTP(cw, r)
-
-				dl_2 := doLogBasedOnResponseHeader(cw.Header())
-				if dl_2 {
-					process(akto_account_id, r, cw, kafkaWriter, body)
-				}
-			} else {
-				next.ServeHTTP(w, r)
+				process(akto_account_id, r, cw, kafkaWriter, body)
 			}
 
 		})
