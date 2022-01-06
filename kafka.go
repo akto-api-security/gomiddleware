@@ -27,5 +27,6 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		Topic:        topic,
 		BatchSize:    batchSize,
 		BatchTimeout: batchTimeout,
+		Async:        true,
 	}
 }
