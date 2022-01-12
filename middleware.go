@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
@@ -33,7 +33,7 @@ func Middleware(kafkaWriter *kafka.Writer, akto_account_id int) func(h http.Hand
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-			body, err := io.ReadAll(r.Body)
+			body, err := ioutil.ReadAll(r.Body)
 			defer r.Body.Close()
 
 			if err != nil {
@@ -43,7 +43,7 @@ func Middleware(kafkaWriter *kafka.Writer, akto_account_id int) func(h http.Hand
 			}
 
 			// And now set a new body, which will simulate the same data we read:
-			r.Body = io.NopCloser(bytes.NewBuffer(body))
+			r.Body = ioutil.NopCloser(bytes.NewBuffer(body))
 			cw := NewResponseWriter(w)
 
 			next.ServeHTTP(cw, r)
