@@ -3,7 +3,7 @@ package gomiddleware
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"regexp"
@@ -65,7 +65,7 @@ func GetConfigFromDashboard(apiUrl string) (*config, error) {
 		return nil, err
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Println("Error while reading response body of config api response", err)
 		return config, err
