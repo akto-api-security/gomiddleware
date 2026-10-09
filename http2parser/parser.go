@@ -168,11 +168,16 @@ func parseHeadersFrame(
 		return fmt.Errorf("HPACK decode failed: %w", err)
 	}
 
+	// Interim responses (100 Continue, 103 Early Hints) precede the final response;
+	// skip them so status and headers come from the final one. Decoding above still
+	// ran, which keeps the HPACK dynamic table in sync.
+	if !isRequest && isInformational(headers) {
+		return nil
+	}
+
 	if isRequest {
 		for _, hf := range headers {
-			if _, exists := stream.RequestHeaders[hf.Name]; !exists {
-				stream.RequestHeaders[hf.Name] = hf.Value
-			}
+			addHeader(stream.RequestHeaders, hf.Name, hf.Value)
 
 			// Requests are parsed before responses, so detect gRPC here too;
 			// otherwise request bodies keep their gRPC length prefix.
@@ -216,9 +221,7 @@ func parseHeadersFrame(
 				stream.GRPCMessage = hf.Value
 			}
 
-			if _, exists := stream.ResponseHeaders[hf.Name]; !exists {
-				stream.ResponseHeaders[hf.Name] = hf.Value
-			}
+			addHeader(stream.ResponseHeaders, hf.Name, hf.Value)
 
 			if hf.Name == ":status" && stream.StatusCode == 0 {
 				stream.Status = hf.Value
@@ -246,6 +249,31 @@ func parseHeadersFrame(
 	}
 
 	return nil
+}
+
+// addHeader stores a header field, combining repeated fields instead of keeping only the
+// first: cookies are joined with "; " (RFC 9113 §8.2.3, HTTP/2 clients send one field per
+// cookie) and other fields with ", " (RFC 9110 §5.3).
+func addHeader(headers map[string]string, name, value string) {
+	prev, exists := headers[name]
+	switch {
+	case !exists:
+		headers[name] = value
+	case name == "cookie":
+		headers[name] = prev + "; " + value
+	default:
+		headers[name] = prev + ", " + value
+	}
+}
+
+// isInformational reports whether a response header block is a 1xx interim response.
+func isInformational(headers []hpack.HeaderField) bool {
+	for _, hf := range headers {
+		if hf.Name == ":status" {
+			return len(hf.Value) == 3 && hf.Value[0] == '1'
+		}
+	}
+	return false
 }
 
 // parseDataFrame handles DATA frames

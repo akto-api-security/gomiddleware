@@ -175,3 +175,64 @@ func TestBodiesKeptOnTruncatedFrame(t *testing.T) {
 		t.Error("truncated stream must not be complete")
 	}
 }
+
+func TestRepeatedHeadersCombined(t *testing.T) {
+	req := newFrameWriter()
+	req.headers(t, 1, true, ":method", "GET", ":path", "/me",
+		"cookie", "session=abc", "cookie", "theme=dark", "accept", "text/html", "accept", "application/json")
+
+	resp := newFrameWriter()
+	resp.headers(t, 1, true, ":status", "200", "vary", "accept", "vary", "cookie")
+
+	streams := map[uint32]*HTTP2Stream{}
+	opts := ebpfOpts()
+	if err := ParseHTTP2Frames(req.buf.Bytes(), streams, true, opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := ParseHTTP2Frames(resp.buf.Bytes(), streams, false, opts); err != nil {
+		t.Fatal(err)
+	}
+
+	s := streams[1]
+	if got := s.RequestHeaders["cookie"]; got != "session=abc; theme=dark" {
+		t.Errorf("cookie = %q", got)
+	}
+	if got := s.RequestHeaders["accept"]; got != "text/html, application/json" {
+		t.Errorf("accept = %q", got)
+	}
+	if got := s.ResponseHeaders["vary"]; got != "accept, cookie" {
+		t.Errorf("vary = %q", got)
+	}
+}
+
+func TestInformationalResponseSkipped(t *testing.T) {
+	req := newFrameWriter()
+	req.headers(t, 1, false, ":method", "POST", ":path", "/upload", "expect", "100-continue")
+	req.data(t, 1, true, []byte("payload"))
+
+	resp := newFrameWriter()
+	resp.headers(t, 1, false, ":status", "100")
+	resp.headers(t, 1, false, ":status", "103", "link", "</style.css>; rel=preload")
+	resp.headers(t, 1, false, ":status", "201", "content-type", "text/plain")
+	resp.data(t, 1, true, []byte("created"))
+
+	streams := map[uint32]*HTTP2Stream{}
+	opts := NewParseOptions(WithBase64Encoding(false))
+	if err := ParseHTTP2Frames(req.buf.Bytes(), streams, true, opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := ParseHTTP2Frames(resp.buf.Bytes(), streams, false, opts); err != nil {
+		t.Fatal(err)
+	}
+
+	s := streams[1]
+	if s.StatusCode != 201 || s.Status != "201" || s.ResponseHeaders[":status"] != "201" {
+		t.Errorf("expected final status 201, got code=%d status=%q header=%q", s.StatusCode, s.Status, s.ResponseHeaders[":status"])
+	}
+	if _, ok := s.ResponseHeaders["link"]; ok {
+		t.Error("headers from the 103 interim response should not be kept")
+	}
+	if !s.ResponseComplete || string(s.ResponseBody) != "created" {
+		t.Errorf("unexpected response: complete=%v body=%q", s.ResponseComplete, s.ResponseBody)
+	}
+}
