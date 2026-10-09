@@ -32,6 +32,10 @@ type HTTP2Stream struct {
 	GRPCStatus   string
 	GRPCMessage  string
 	HeadersCount int // Track number of HEADERS frames (for gRPC trailing headers)
+
+	// Raw DATA bytes per direction; turned into RequestBody/ResponseBody by finalizeBodies.
+	reqData  []byte
+	respData []byte
 }
 
 // ParseOptions configures HTTP/2 parsing behavior
@@ -105,6 +109,9 @@ func ParseHTTP2Frames(
 
 	decoder := hpack.NewDecoder(opts.MaxHeaderTableSize, nil)
 
+	// Runs on error returns too, so streams parsed before a bad frame keep their bodies.
+	defer finalizeBodies(streams, isRequest, opts)
+
 	for {
 		frame, err := framer.ReadFrame()
 		if err != nil {
@@ -165,6 +172,12 @@ func parseHeadersFrame(
 		for _, hf := range headers {
 			if _, exists := stream.RequestHeaders[hf.Name]; !exists {
 				stream.RequestHeaders[hf.Name] = hf.Value
+			}
+
+			// Requests are parsed before responses, so detect gRPC here too;
+			// otherwise request bodies keep their gRPC length prefix.
+			if hf.Name == "content-type" && strings.HasPrefix(hf.Value, "application/grpc") {
+				stream.IsGRPC = true
 			}
 
 			// Extract pseudo-headers
@@ -242,28 +255,12 @@ func parseDataFrame(
 	isRequest bool,
 	opts *ParseOptions,
 ) {
+	// Copy out: f.Data() points into the framer's buffer, which is reused by the next ReadFrame.
+	// Empty frames still matter, they often carry END_STREAM.
 	data := f.Data()
 
-	if len(data) == 0 {
-		return
-	}
-
-	var payload []byte
-	if stream.IsGRPC {
-		// ✅ Parse gRPC frame format: [1 byte compressed][4 bytes length][message]
-		payload = parseGRPCFrames(data)
-	} else {
-		payload = data
-	}
-
 	if isRequest {
-		if opts.Base64EncodePayload {
-			// Packet capture mode: replace body with base64
-			stream.RequestBody = []byte(base64.StdEncoding.EncodeToString(payload))
-		} else {
-			// eBPF mode: accumulate raw bytes
-			stream.RequestBody = append(stream.RequestBody, payload...)
-		}
+		stream.reqData = append(stream.reqData, data...)
 
 		// Mark complete based on mode
 		if opts.WaitForEndStream {
@@ -275,13 +272,7 @@ func parseDataFrame(
 		}
 
 	} else {
-		if opts.Base64EncodePayload {
-			// Packet capture mode: replace body with base64
-			stream.ResponseBody = []byte(base64.StdEncoding.EncodeToString(payload))
-		} else {
-			// eBPF mode: accumulate raw bytes
-			stream.ResponseBody = append(stream.ResponseBody, payload...)
-		}
+		stream.respData = append(stream.respData, data...)
 
 		// Mark complete based on mode
 		if opts.WaitForEndStream {
@@ -290,6 +281,37 @@ func parseDataFrame(
 			}
 		} else {
 			stream.ResponseComplete = true
+		}
+	}
+}
+
+// finalizeBodies turns the DATA bytes collected for one direction into RequestBody or
+// ResponseBody: gRPC messages are unwrapped, then the result is base64 encoded if asked.
+// Working on the whole body (not frame by frame) keeps bodies and gRPC messages that
+// span several DATA frames intact. Raw bytes are released once the direction is complete.
+func finalizeBodies(streams map[uint32]*HTTP2Stream, isRequest bool, opts *ParseOptions) {
+	for _, s := range streams {
+		data, body, complete := &s.respData, &s.ResponseBody, s.ResponseComplete
+		if isRequest {
+			data, body, complete = &s.reqData, &s.RequestBody, s.RequestComplete
+		}
+		if *data == nil {
+			continue
+		}
+
+		payload := *data
+		if s.IsGRPC {
+			payload = parseGRPCFrames(payload)
+		}
+		if opts.Base64EncodePayload {
+			encoded := make([]byte, base64.StdEncoding.EncodedLen(len(payload)))
+			base64.StdEncoding.Encode(encoded, payload)
+			payload = encoded
+		}
+		*body = payload
+
+		if complete {
+			*data = nil
 		}
 	}
 }
